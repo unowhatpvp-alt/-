@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>随心悦读 - 移动端小说阅读器</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Mammoth.js for DOCX parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+  <!-- JSZip for zip/epub handling -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            theme: {
+              sepia: '#f4ebd9',
+              green: '#c7edcc',
+              pink: '#fce4ec',
+              light: '#ffffff',
+              dark: '#1a1a1a'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Prevent unwanted text selection while tapping for page turn */
+    .no-select {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    /* UI Transitions */
+    .transition-ui {
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+    }
+
+    /* Page turn animations */
+    .slide-left-enter {
+      animation: slideLeft 0.2s ease-out forwards;
+    }
+    .slide-right-enter {
+      animation: slideRight 0.2s ease-out forwards;
+    }
+
+    @keyframes slideLeft {
+      from { transform: translateX(30px); opacity: 0.6; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes slideRight {
+      from { transform: translateX(-30px); opacity: 0.6; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    /* Custom Scrollbar for TOC */
+    ::-webkit-scrollbar {
+      width: 4px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(150, 150, 150, 0.3);
+      border-radius: 4px;
+    }
+
+    /* Reader Typography Styling */
+    .reader-body p {
+      margin-bottom: 1.15em;
+      text-align: justify;
+      text-justify: inter-ideograph;
+      word-break: break-word;
+      text-indent: 2em;
+    }
+
+    /* Smooth Touch Scroll for Scroll Mode */
+    .scroll-touch {
+      -webkit-overflow-scrolling: touch;
+    }
+  </style>
+</head>
+
+<body class="h-full overflow-hidden bg-gray-900 text-gray-800 antialiased font-sans no-select select-none">
+
+  <!-- MAIN APP CONTAINER -->
+  <div id="app" class="relative w-full h-full max-w-md mx-auto shadow-2xl overflow-hidden flex flex-col transition-colors duration-300" style="background-color: #f4ebd9; color: #4a3b32;">
+    
+    <!-- TOP TOOLBAR -->
+    <header id="top-bar" class="absolute top-0 left-0 right-0 z-30 bg-white/95 dark:bg-gray-900/95 backdrop-blur border-b border-gray-200/80 dark:border-gray-800 text-gray-800 dark:text-gray-100 px-3 py-2.5 flex items-center justify-between transition-ui -translate-y-full opacity-0 shadow-md">
+      <button id="btn-back-shelf" class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 active:scale-95 transition" title="返回书架">
+        <i data-lucide="arrow-left" class="w-5 h-5"></i>
+      </button>
+      <h1 id="book-title" class="text-xs font-bold truncate px-2 text-center flex-1">未选择书籍</h1>
+      <div class="flex items-center space-x-1">
+        <button id="btn-toc-toggle" class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 active:scale-95 transition" title="目录">
+          <i data-lucide="list" class="w-5 h-5"></i>
+        </button>
+        <button id="btn-settings-toggle" class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 active:scale-95 transition" title="设置">
+          <i data-lucide="sliders" class="w-5 h-5"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- MAIN READING VIEWPORT -->
+    <main id="reader-viewport" class="relative flex-1 overflow-hidden">
+      
+      <!-- EMPTY STATE / BOOKSHELF LANDING -->
+      <div id="empty-state" class="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 bg-white dark:bg-gray-900 dark:text-gray-200 overflow-y-auto">
+        <div class="w-16 h-16 bg-indigo-50 dark:bg-gray-800 text-indigo-500 rounded-2xl flex items-center justify-center mb-4 shadow-sm">
+          <i data-lucide="book-open" class="w-8 h-8"></i>
+        </div>
+        <h2 class="text-xl font-bold mb-1">随心手机阅读器</h2>
+        <p class="text-xs text-gray-500 dark:text-gray-400 max-w-xs mb-6">支持导入 .txt, .docx, .epub 等文件，自动拆分章节与断点续读。</p>
+        
+        <!-- File Input Drop Target & Trigger -->
+        <label for="file-input" class="w-full max-w-xs py-3.5 px-6 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-medium rounded-2xl shadow-lg shadow-indigo-200 dark:shadow-none flex items-center justify-center space-x-2 cursor-pointer transition">
+          <i data-lucide="file-up" class="w-5 h-5"></i>
+          <span>导入小说文件</span>
+        </label>
+        <input type="file" id="file-input" accept=".txt,.docx,.epub" class="hidden">
+
+        <!-- Drag & Drop Area -->
+        <div id="drop-zone" class="mt-3 w-full max-w-xs border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-xl p-3 text-xs text-gray-400">
+          或者拖拽文件至此处
+        </div>
+
+        <!-- Recent Books Shelf -->
+        <div id="recent-shelf-container" class="mt-6 w-full max-w-xs text-left hidden">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">最近阅读</h3>
+            <button id="btn-clear-history" class="text-[10px] text-red-400 hover:underline">清空记录</button>
+          </div>
+          <div id="recent-books-list" class="space-y-2"></div>
+        </div>
+      </div>
+
+      <!-- READING CONTAINER -->
+      <div id="reading-area" class="w-full h-full p-5 sm:p-6 flex flex-col justify-between hidden scroll-touch">
+        
+        <!-- Chapter Mini Header -->
+        <div id="mini-header" class="text-[10px] opacity-60 tracking-wider truncate pb-1 select-none flex justify-between items-center">
+          <span id="current-chapter-title">第 1 章</span>
+          <span id="mode-badge" class="px-1.5 py-0.5 rounded text-[9px] bg-black/10 dark:bg-white/10">翻页</span>
+        </div>
+
+        <!-- Dynamic Content Display Frame -->
+        <div id="reader-frame" class="relative flex-1 overflow-hidden my-1">
+          <div id="reader-content" class="reader-body text-justify transition-all duration-150"></div>
+        </div>
+
+        <!-- Reading Mini Footer -->
+        <div id="mini-footer" class="flex justify-between items-center text-[10px] opacity-60 pt-1 select-none">
+          <span id="battery-time-status">12:00</span>
+          <span id="page-progress-text">0%</span>
+        </div>
+      </div>
+
+      <!-- INTERACTIVE TAP ZONES FOR PAGE TURNING -->
+      <div id="tap-zone-left" class="absolute left-0 top-12 bottom-12 w-1/3 z-20 hidden"></div>
+      <div id="tap-zone-center" class="absolute left-1/3 top-12 bottom-12 w-1/3 z-20 hidden"></div>
+      <div id="tap-zone-right" class="absolute right-0 top-12 bottom-12 w-1/3 z-20 hidden"></div>
+    </main>
+
+    <!-- BOTTOM TOOLBAR -->
+    <footer id="bottom-bar" class="absolute bottom-0 left-0 right-0 z-30 bg-white/95 dark:bg-gray-900/95 backdrop-blur border-t border-gray-200/80 dark:border-gray-800 text-gray-800 dark:text-gray-100 p-4 transition-ui translate-y-full opacity-0 shadow-lg space-y-3">
+      <!-- Progress Slider -->
+      <div class="flex items-center space-x-3 text-xs">
+        <button id="btn-prev-chapter" class="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded font-medium text-gray-500">上一章</button>
+        <input type="range" id="progress-slider" min="0" max="100" value="0" class="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600">
+        <button id="btn-next-chapter" class="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded font-medium text-gray-500">下一章</button>
+      </div>
+
+      <!-- Quick Action Controls -->
+      <div class="flex items-center justify-around pt-1">
+        <button id="btn-toc-bottom" class="flex flex-col items-center space-y-1 text-xs opacity-80 hover:opacity-100 active:scale-95 transition">
+          <i data-lucide="list" class="w-5 h-5"></i>
+          <span>目录</span>
+        </button>
+        <button id="btn-toggle-mode" class="flex flex-col items-center space-y-1 text-xs opacity-80 hover:opacity-100 active:scale-95 transition">
+          <i data-lucide="book-open-check" class="w-5 h-5"></i>
+          <span id="mode-text">切换模式</span>
+        </button>
+        <button id="btn-settings-bottom" class="flex flex-col items-center space-y-1 text-xs opacity-80 hover:opacity-100 active:scale-95 transition">
+          <i data-lucide="type" class="w-5 h-5"></i>
+          <span>设置</span>
+        </button>
+      </div>
+    </footer>
+
+    <!-- DRAWER: TOC MENU -->
+    <aside id="toc-drawer" class="absolute inset-y-0 left-0 w-4/5 max-w-xs z-40 bg-white dark:bg-gray-900 shadow-2xl transition-ui -translate-x-full flex flex-col">
+      <div class="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+        <h3 class="font-bold text-sm text-gray-800 dark:text-gray-100 flex items-center gap-2">
+          <i data-lucide="bookmark" class="w-4 h-4 text-indigo-500"></i>
+          章节目录
+        </h3>
+        <span id="toc-count" class="text-xs text-gray-400">0 章</span>
+      </div>
+      <div id="toc-list" class="flex-1 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-800/50 text-xs"></div>
+    </aside>
+
+    <!-- DRAWER: SETTINGS PANEL -->
+    <aside id="settings-drawer" class="absolute inset-x-0 bottom-0 z-40 bg-white dark:bg-gray-900 rounded-t-3xl shadow-2xl transition-ui translate-y-full p-5 space-y-4">
+      <div class="w-10 h-1 bg-gray-300 dark:bg-gray-700 rounded-full mx-auto mb-1"></div>
+      
+      <!-- Theme Selection -->
+      <div>
+        <label class="text-[11px] text-gray-400 block mb-2 font-medium">配色主题</label>
+        <div class="grid grid-cols-5 gap-2" id="theme-options">
+          <button data-theme="sepia" class="h-8 rounded-xl border border-amber-300 bg-[#f4ebd9] text-amber-900 text-xs font-medium flex items-center justify-center shadow-sm">羊皮纸</button>
+          <button data-theme="green" class="h-8 rounded-xl border border-emerald-300 bg-[#c7edcc] text-emerald-900 text-xs font-medium flex items-center justify-center shadow-sm">护眼绿</button>
+          <button data-theme="pink" class="h-8 rounded-xl border border-pink-300 bg-[#fce4ec] text-pink-900 text-xs font-medium flex items-center justify-center shadow-sm">柔粉</button>
+          <button data-theme="light" class="h-8 rounded-xl border border-gray-300 bg-[#ffffff] text-gray-800 text-xs font-medium flex items-center justify-center shadow-sm">纯白</button>
+          <button data-theme="dark" class="h-8 rounded-xl border border-gray-800 bg-[#1a1a1a] text-gray-300 text-xs font-medium flex items-center justify-center shadow-sm">夜间</button>
+        </div>
+      </div>
+
+      <!-- Font Size -->
+      <div class="flex items-center justify-between">
+        <span class="text-xs text-gray-400 font-medium">字号调整</span>
+        <div class="flex items-center bg-gray-100 dark:bg-gray-800 rounded-xl p-1 space-x-2">
+          <button id="btn-font-decrease" class="w-8 h-8 rounded-lg bg-white dark:bg-gray-700 text-xs font-bold shadow-sm flex items-center justify-center active:scale-95">A-</button>
+          <span id="font-size-indicator" class="text-xs font-semibold px-2">18px</span>
+          <button id="btn-font-increase" class="w-8 h-8 rounded-lg bg-white dark:bg-gray-700 text-xs font-bold shadow-sm flex items-center justify-center active:scale-95">A+</button>
+        </div>
+      </div>
+
+      <!-- Line Height -->
+      <div class="flex items-center justify-between">
+        <span class="text-xs text-gray-400 font-medium">行间距</span>
+        <div class="flex items-center bg-gray-100 dark:bg-gray-800 rounded-xl p-1 space-x-1">
+          <button data-lh="1.4" class="lh-btn px-3 py-1.5 rounded-lg text-xs font-medium">紧凑</button>
+          <button data-lh="1.7" class="lh-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-gray-700 shadow-sm">标准</button>
+          <button data-lh="2.0" class="lh-btn px-3 py-1.5 rounded-lg text-xs font-medium">宽松</button>
+        </div>
+      </div>
+
+      <!-- Font Family -->
+      <div class="flex items-center justify-between">
+        <span class="text-xs text-gray-400 font-medium">字体族</span>
+        <select id="font-family-select" class="bg-gray-100 dark:bg-gray-800 text-xs rounded-xl px-3 py-2 border-0 focus:ring-2 focus:ring-indigo-500">
+          <option value="system-ui, sans-serif">无衬线 (默认)</option>
+          <option value="'Noto Serif SC', 'Source Han Serif SC', Georgia, serif">宋体 / 衬线</option>
+          <option value="'Kaiti SC', 'STKaiti', '楷体', serif">楷体</option>
+        </select>
+      </div>
+    </aside>
+
+    <!-- OVERLAY MASK -->
+    <div id="drawer-overlay" class="absolute inset-0 bg-black/40 z-30 opacity-0 pointer-events-none transition-opacity duration-300"></div>
+
+    <!-- LOADING SPINNER -->
+    <div id="loading-overlay" class="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white hidden">
+      <div class="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+      <p id="loading-text" class="text-xs font-medium">处理中...</p>
+    </div>
+
+  </div>
+
+  <!-- APPLICATION LOGIC -->
+  <script>
+    /* ===================================================================
+       APPLICATION STATE
+       =================================================================== */
+    const state = {
+      bookName: '',
+      rawText: '',
+      chapters: [], // [{ title, content }]
+      currentChapterIndex: 0,
+      currentPage: 0,
+      totalPages: 1,
+      mode: 'paged', // 'paged' | 'scroll'
+      settings: {
+        fontSize: 18,
+        lineHeight: 1.7,
+        fontFamily: 'system-ui, sans-serif',
+        theme: 'sepia'
+      },
+      pagedPages: [],
+      uiVisible: false
+    };
+
+    // Color Styles
+    const themeStyles = {
+      sepia: { bg: '#f4ebd9', text: '#4a3b32', dark: false },
+      green: { bg: '#c7edcc', text: '#1c3d22', dark: false },
+      pink: { bg: '#fce4ec', text: '#5c2b3d', dark: false },
+      light: { bg: '#ffffff', text: '#212529', dark: false },
+      dark: { bg: '#1a1a1a', text: '#a0aec0', dark: true }
+    };
+
+    /* ===================================================================
+       DOM HELPER & REFERENCES
+       =================================================================== */
+    const $ = id => document.getElementById(id);
+    const elements = {
+      app: $('app'),
+      topBar: $('top-bar'),
+      bottomBar: $('bottom-bar'),
+      readerViewport: $('reader-viewport'),
+      readingArea: $('reading-area'),
+      readerFrame: $('reader-frame'),
+      readerContent: $('reader-content'),
+      emptyState: $('empty-state'),
+      fileInput: $('file-input'),
+      dropZone: $('drop-zone'),
+      bookTitle: $('book-title'),
+      currentChapterTitle: $('current-chapter-title'),
+      pageProgressText: $('page-progress-text'),
+      progressSlider: $('progress-slider'),
+      tocDrawer: $('toc-drawer'),
+      tocList: $('toc-list'),
+      tocCount: $('toc-count'),
+      settingsDrawer: $('settings-drawer'),
+      drawerOverlay: $('drawer-overlay'),
+      loadingOverlay: $('loading-overlay'),
+      loadingText: $('loading-text'),
+      fontIndicator: $('font-size-indicator'),
+      batteryTimeStatus: $('battery-time-status'),
+      modeText: $('mode-text'),
+      modeBadge: $('mode-badge'),
+      recentShelfContainer: $('recent-shelf-container'),
+      recentBooksList: $('recent-books-list'),
+      tapLeft: $('tap-zone-left'),
+      tapCenter: $('tap-zone-center'),
+      tapRight: $('tap-zone-right')
+    };
+
+    /* ===================================================================
+       INDEXEDDB DATABASE FOR LARGE FILE STORAGE
+       =================================================================== */
+    const DB_NAME = 'NovelReaderDB';
+    const DB_VERSION = 1;
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = e => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('books')) {
+            db.createObjectStore('books', { keyPath: 'name' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function saveBookToDB(name, text) {
+      try {
+        const db = await openDB();
+        const tx = db.transaction('books', 'readwrite');
+        tx.objectStore('books').put({ name, text, updatedAt: Date.now() });
+      } catch (e) {
+        console.warn('IndexedDB write failed, falling back to localStorage', e);
+      }
+    }
+
+    async function loadBookFromDB(name) {
+      try {
+        const db = await openDB();
+        return new Promise((resolve) => {
+          const tx = db.transaction('books', 'readonly');
+          const req = tx.objectStore('books').get(name);
+          req.onsuccess = () => resolve(req.result ? req.result.text : null);
+          req.onerror = () => resolve(null);
+        });
+      } catch (e) {
+        return null;
+      }
+    }
+
+    async function deleteBookFromDB(name) {
+      try {
+        const db = await openDB();
+        const tx = db.transaction('books', 'readwrite');
+        tx.objectStore('books').delete(name);
+      } catch (e) {}
+    }
+
+    /* ===================================================================
+       INITIALIZATION
+       =================================================================== */
+    window.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide) lucide.createIcons();
+      loadSettings();
+      setupEventListeners();
+      updateClock();
+      setInterval(updateClock, 30000);
+      renderRecentShelf();
+    });
+
+    function setupEventListeners() {
+      // Direct File Input Trigger Fix
+      elements.fileInput.addEventListener('change', handleFileSelect);
+
+      // Drag and drop handling
+      elements.dropZone.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); });
+      elements.dropZone.addEventListener('drop', handleFileDrop);
+
+      // Interactive Tap Zones
+      elements.tapCenter.addEventListener('click', toggleUI);
+      elements.tapLeft.addEventListener('click', () => turnPage(-1));
+      elements.tapRight.addEventListener('click', () => turnPage(1));
+
+      // Swipe Gesture Logic on Reader Frame
+      let touchStartX = 0;
+      let touchStartY = 0;
+      elements.readingArea.addEventListener('touchstart', e => {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+      }, { passive: true });
+
+      elements.readingArea.addEventListener('touchend', e => {
+        if (state.mode !== 'paged') return;
+        const deltaX = e.changedTouches[0].clientX - touchStartX;
+        const deltaY = e.changedTouches[0].clientY - touchStartY;
+
+        // Horizontal Swipe Check (>40px movement & more horizontal than vertical)
+        if (Math.abs(deltaX) > 40 && Math.abs(deltaX) > Math.abs(deltaY)) {
+          if (deltaX < 0) {
+            turnPage(1); // Swipe Left -> Next Page
+          } else {
+            turnPage(-1); // Swipe Right -> Prev Page
+          }
+        }
+      }, { passive: true });
+
+      // Progress Slider
+      elements.progressSlider.addEventListener('input', e => {
+        const val = parseInt(e.target.value);
+        if (state.mode === 'paged') {
+          state.currentPage = Math.min(val, state.totalPages - 1);
+          renderCurrentPage();
+        } else {
+          const scrollable = elements.readingArea.scrollHeight - elements.readingArea.clientHeight;
+          elements.readingArea.scrollTop = (val / 100) * scrollable;
+        }
+      });
+
+      // Chapter Switching Buttons
+      $('btn-prev-chapter').addEventListener('click', () => jumpToChapter(state.currentChapterIndex - 1));
+      $('btn-next-chapter').addEventListener('click', () => jumpToChapter(state.currentChapterIndex + 1));
+
+      // Settings Adjustments
+      $('btn-font-decrease').addEventListener('click', () => updateFontSize(-1));
+      $('btn-font-increase').addEventListener('click', () => updateFontSize(1));
+      
+      $('font-family-select').addEventListener('change', e => {
+        state.settings.fontFamily = e.target.value;
+        applySettings();
+      });
+
+      document.querySelectorAll('.lh-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.lh-btn').forEach(b => b.classList.remove('bg-white', 'dark:bg-gray-700', 'shadow-sm'));
+          btn.classList.add('bg-white', 'dark:bg-gray-700', 'shadow-sm');
+          state.settings.lineHeight = parseFloat(btn.dataset.lh);
+          applySettings();
+        });
+      });
+
+      document.querySelectorAll('#theme-options button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          state.settings.theme = btn.dataset.theme;
+          applySettings();
+        });
+      });
+
+      // Drawer Toggles
+      $('btn-toc-toggle').addEventListener('click', openTOC);
+      $('btn-toc-bottom').addEventListener('click', openTOC);
+      $('btn-settings-toggle').addEventListener('click', openSettings);
+      $('btn-settings-bottom').addEventListener('click', openSettings);
+      elements.drawerOverlay.addEventListener('click', closeDrawers);
+      $('btn-back-shelf').addEventListener('click', showShelf);
+      $('btn-toggle-mode').addEventListener('click', toggleReadingMode);
+      $('btn-clear-history').addEventListener('click', clearHistory);
+
+      // Window Resize Listener
+      let resizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          if (state.rawText && state.mode === 'paged') {
+            paginateCurrentChapter();
+          }
+        }, 200);
+      });
+
+      // Scroll Progress Tracker for Scroll Mode
+      elements.readingArea.addEventListener('scroll', () => {
+        if (state.mode === 'scroll') {
+          const totalScroll = elements.readingArea.scrollHeight - elements.readingArea.clientHeight;
+          if (totalScroll > 0) {
+            const pct = Math.round((elements.readingArea.scrollTop / totalScroll) * 100);
+            elements.pageProgressText.textContent = `${pct}%`;
+            elements.progressSlider.value = pct;
+          }
+        }
+      });
+    }
+
+    /* ===================================================================
+       FILE PARSING WITH ENCODING FALLBACKS
+       =================================================================== */
+    function handleFileDrop(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        processFile(e.dataTransfer.files[0]);
+      }
+    }
+
+    function handleFileSelect(e) {
+      if (e.target.files && e.target.files.length > 0) {
+        processFile(e.target.files[0]);
+      }
+    }
+
+    async function processFile(file) {
+      showLoading(`正在解析 ${file.name}...`);
+      state.bookName = file.name.replace(/\.[^/.]+$/, "");
+      const ext = file.name.split('.').pop().toLowerCase();
+
+      try {
+        let text = '';
+        if (ext === 'txt') {
+          text = await parseTxtFile(file);
+        } else if (ext === 'docx') {
+          text = await parseDocxFile(file);
+        } else if (ext === 'epub') {
+          text = await parseEpubFile(file);
+        } else {
+          alert('不支持该格式，目前支持 .txt, .docx, .epub');
+          hideLoading();
+          return;
+        }
+
+        if (!text || text.trim().length === 0) {
+          throw new Error('提取文本为空');
+        }
+
+        state.rawText = text;
+        parseChapters(text);
+        await saveBookToDB(state.bookName, text);
+        saveBookMetaToHistory(state.bookName);
+        startReading();
+      } catch (err) {
+        console.error(err);
+        alert(`解析失败: ${err.message || '文件格式不正确'}`);
+      } finally {
+        hideLoading();
+        elements.fileInput.value = ''; // Reset file input
+      }
+    }
+
+    // Robust Encoding Detection for TXT (UTF-8 / GBK / GB2312)
+    function parseTxtFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsArrayBuffer(file);
+        reader.onload = e => {
+          const buffer = e.target.result;
+          
+          // Try UTF-8 first
+          let decoder = new TextDecoder('utf-8', { fatal: true });
+          try {
+            const decoded = decoder.decode(buffer);
+            resolve(decoded);
+          } catch (err) {
+            // Fallback to GBK / GB2312
+            try {
+              decoder = new TextDecoder('gbk');
+              const gbkDecoded = decoder.decode(buffer);
+              resolve(gbkDecoded);
+            } catch (err2) {
+              // Final fallback
+              const fallbackReader = new FileReader();
+              fallbackReader.readAsText(file, 'gb18030');
+              fallbackReader.onload = fe => resolve(fe.target.result);
+              fallbackReader.onerror = fer => reject(fer);
+            }
+          }
+        };
+        reader.onerror = err => reject(err);
+      });
+    }
+
+    // Parse DOCX via Mammoth
+    function parseDocxFile(file) {
+      return new Promise((resolve, reject) => {
+        if (typeof mammoth === 'undefined') {
+          reject(new Error('DOCX 解析组件加载失败，请检查网络链接'));
+          return;
+        }
+        const reader = new FileReader();
+        reader.readAsArrayBuffer(file);
+        reader.onload = e => {
+          mammoth.extractRawText({ arrayBuffer: e.target.result })
+            .then(res => resolve(res.value))
+            .catch(err => reject(err));
+        };
+        reader.onerror = err => reject(err);
+      });
+    }
+
+    // Parse EPUB via JSZip Fallback Parsing
+    async function parseEpubFile(file) {
+      if (typeof JSZip === 'undefined') {
+        throw new Error('EPUB 解压组件加载失败');
+      }
+
+      const zip = await JSZip.loadAsync(file);
+      let htmlFiles = [];
+
+      // Find all html/xhtml files inside epub
+      zip.forEach((relativePath, zipEntry) => {
+        if (!zipEntry.dir && /\.(html|xhtml|xml)$/i.test(relativePath)) {
+          htmlFiles.push(zipEntry);
+        }
+      });
+
+      if (htmlFiles.length === 0) {
+        throw new Error('未在 EPUB 中提取到可读文本');
+      }
+
+      // Sort files by path name
+      htmlFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+
+      let fullText = '';
+      for (const entry of htmlFiles) {
+        const content = await entry.async('string');
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(content, 'text/html');
+        const text = doc.body ? (doc.body.innerText || doc.body.textContent) : '';
+        if (text && text.trim().length > 0) {
+          fullText += text + '\n\n';
+        }
+      }
+
+      return fullText;
+    }
+
+    /* ===================================================================
+       CHAPTER PARSING & REGEX MATCHING
+       =================================================================== */
+    function parseChapters(text) {
+      // Regex for Chinese & English Novel Chapter Patterns
+      const chapterRegex = /(?:^|\n)\s*(第[0-9一二三四五六七八九十百千万]+[章回节卷集]|\bChapter\s+\d+|序章|契子|后记|尾声).*/g;
+      
+      let matches = [];
+      let match;
+      while ((match = chapterRegex.exec(text)) !== null) {
+        matches.push({
+          title: match[0].trim(),
+          index: match.index
+        });
+      }
+
+      state.chapters = [];
+      if (matches.length === 0) {
+        // Fallback: Split into ~8,000 character chunks if no chapter headers exist
+        const chunkSize = 8000;
+        for (let i = 0; i < text.length; i += chunkSize) {
+          state.chapters.push({
+            title: `第 ${Math.floor(i / chunkSize) + 1} 部分`,
+            content: text.slice(i, i + chunkSize)
+          });
+        }
+      } else {
+        for (let i = 0; i < matches.length; i++) {
+          const start = matches[i].index;
+          const end = (i + 1 < matches.length) ? matches[i + 1].index : text.length;
+          const content = text.slice(start, end).trim();
+
+          state.chapters.push({
+            title: matches[i].title,
+            content: content
+          });
+        }
+      }
+
+      renderTOC();
+    }
+
+    function renderTOC() {
+      elements.tocList.innerHTML = '';
+      elements.tocCount.textContent = `共 ${state.chapters.length} 章`;
+
+      state.chapters.forEach((ch, idx) => {
+        const item = document.createElement('div');
+        const isActive = idx === state.currentChapterIndex;
+        item.className = `p-3 flex items-center justify-between cursor-pointer border-b border-gray-100 dark:border-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 transition ${
+          isActive ? 'text-indigo-600 dark:text-indigo-400 font-bold bg-indigo-50/50 dark:bg-indigo-950/30' : 'text-gray-700 dark:text-gray-300'
+        }`;
+        item.innerHTML = `<span class="truncate">${ch.title}</span>`;
+        item.addEventListener('click', () => {
+          jumpToChapter(idx);
+          closeDrawers();
+        });
+        elements.tocList.appendChild(item);
+      });
+    }
+
+    /* ===================================================================
+       READING & PAGINATION ENGINE
+       =================================================================== */
+    function startReading() {
+      elements.emptyState.classList.add('hidden');
+      elements.readingArea.classList.remove('hidden');
+      elements.tapLeft.classList.remove('hidden');
+      elements.tapCenter.classList.remove('hidden');
+      elements.tapRight.classList.remove('hidden');
+
+      elements.bookTitle.textContent = state.bookName;
+
+      // Restore stored progress
+      const progress = getSavedProgress(state.bookName);
+      if (progress) {
+        state.currentChapterIndex = progress.chapterIndex || 0;
+        state.currentPage = progress.page || 0;
+      } else {
+        state.currentChapterIndex = 0;
+        state.currentPage = 0;
+      }
+
+      applySettings();
+      if (state.mode === 'paged') {
+        paginateCurrentChapter();
+      } else {
+        renderScrollChapter();
+      }
+    }
+
+    function paginateCurrentChapter() {
+      const chapter = state.chapters[state.currentChapterIndex];
+      if (!chapter) return;
+
+      elements.currentChapterTitle.textContent = chapter.title;
+      elements.readerContent.innerHTML = '';
+
+      const frameWidth = elements.readerFrame.clientWidth;
+      const frameHeight = elements.readerFrame.clientHeight;
+
+      const paragraphs = chapter.content.split(/\n+/).map(p => p.trim()).filter(Boolean);
+      
+      state.pagedPages = [];
+      let currentPageHTML = '';
+
+      // Test element for precise height calculation
+      const tester = document.createElement('div');
+      tester.className = 'reader-body text-justify';
+      tester.style.width = `${frameWidth}px`;
+      tester.style.visibility = 'hidden';
+      tester.style.position = 'absolute';
+      tester.style.fontSize = `${state.settings.fontSize}px`;
+      tester.style.lineHeight = `${state.settings.lineHeight}`;
+      tester.style.fontFamily = state.settings.fontFamily;
+      document.body.appendChild(tester);
+
+      paragraphs.forEach(p => {
+        const pHTML = `<p>${escapeHTML(p)}</p>`;
+        tester.innerHTML = currentPageHTML + pHTML;
+
+        if (tester.clientHeight > frameHeight) {
+          if (currentPageHTML) {
+            state.pagedPages.push(currentPageHTML);
+            currentPageHTML = pHTML;
+            tester.innerHTML = pHTML;
+          } else {
+            state.pagedPages.push(pHTML);
+            currentPageHTML = '';
+            tester.innerHTML = '';
+          }
+        } else {
+          currentPageHTML += pHTML;
+        }
+      });
+
+      if (currentPageHTML) {
+        state.pagedPages.push(currentPageHTML);
+      }
+
+      document.body.removeChild(tester);
+
+      state.totalPages = state.pagedPages.length || 1;
+      if (state.currentPage >= state.totalPages) {
+        state.currentPage = state.totalPages - 1;
+      }
+
+      renderCurrentPage();
+    }
+
+    function renderCurrentPage(anim = '') {
+      if (state.pagedPages.length === 0) return;
+
+      elements.readerContent.innerHTML = state.pagedPages[state.currentPage] || '';
+      elements.pageProgressText.textContent = `${state.currentPage + 1} / ${state.totalPages} 页`;
+      
+      elements.progressSlider.max = Math.max(0, state.totalPages - 1);
+      elements.progressSlider.value = state.currentPage;
+
+      if (anim === 'next') {
+        elements.readerContent.classList.remove('slide-left-enter', 'slide-right-enter');
+        void elements.readerContent.offsetWidth;
+        elements.readerContent.classList.add('slide-left-enter');
+      } else if (anim === 'prev') {
+        elements.readerContent.classList.remove('slide-left-enter', 'slide-right-enter');
+        void elements.readerContent.offsetWidth;
+        elements.readerContent.classList.add('slide-right-enter');
+      }
+
+      saveCurrentProgress();
+    }
+
+    function renderScrollChapter() {
+      const chapter = state.chapters[state.currentChapterIndex];
+      if (!chapter) return;
+
+      elements.currentChapterTitle.textContent = chapter.title;
+      elements.readerContent.innerHTML = chapter.content
+        .split(/\n+/)
+        .map(p => `<p>${escapeHTML(p.trim())}</p>`)
+        .join('');
+
+      elements.readingArea.classList.add('overflow-y-auto');
+      elements.readingArea.scrollTop = 0;
+      elements.pageProgressText.textContent = '0%';
+      saveCurrentProgress();
+    }
+
+    /* ===================================================================
+       PAGE TURNING & CHAPTER JUMP
+       =================================================================== */
+    function turnPage(dir) {
+      if (state.mode === 'scroll') {
+        elements.readingArea.scrollBy({
+          top: elements.readingArea.clientHeight * 0.75 * dir,
+          behavior: 'smooth'
+        });
+        return;
+      }
+
+      if (dir === 1) { // Forward
+        if (state.currentPage < state.totalPages - 1) {
+          state.currentPage++;
+          renderCurrentPage('next');
+        } else if (state.currentChapterIndex < state.chapters.length - 1) {
+          state.currentChapterIndex++;
+          state.currentPage = 0;
+          paginateCurrentChapter();
+          renderTOC();
+        }
+      } else if (dir === -1) { // Backward
+        if (state.currentPage > 0) {
+          state.currentPage--;
+          renderCurrentPage('prev');
+        } else if (state.currentChapterIndex > 0) {
+          state.currentChapterIndex--;
+          paginateCurrentChapter();
+          state.currentPage = state.totalPages - 1;
+          renderCurrentPage('prev');
+          renderTOC();
+        }
+      }
+    }
+
+    function jumpToChapter(idx) {
+      if (idx >= 0 && idx < state.chapters.length) {
+        state.currentChapterIndex = idx;
+        state.currentPage = 0;
+        if (state.mode === 'paged') {
+          paginateCurrentChapter();
+        } else {
+          renderScrollChapter();
+        }
+        renderTOC();
+      }
+    }
+
+    function toggleReadingMode() {
+      if (state.mode === 'paged') {
+        state.mode = 'scroll';
+        elements.modeText.textContent = '切换翻页';
+        elements.modeBadge.textContent = '滚动';
+        elements.readingArea.classList.add('overflow-y-auto');
+        renderScrollChapter();
+      } else {
+        state.mode = 'paged';
+        elements.modeText.textContent = '切换滚动';
+        elements.modeBadge.textContent = '翻页';
+        elements.readingArea.classList.remove('overflow-y-auto');
+        paginateCurrentChapter();
+      }
+      hideUI();
+    }
+
+    /* ===================================================================
+       SETTINGS & STYLING
+       =================================================================== */
+    function updateFontSize(delta) {
+      state.settings.fontSize = Math.min(Math.max(12, state.settings.fontSize + delta), 32);
+      elements.fontIndicator.textContent = `${state.settings.fontSize}px`;
+      applySettings();
+      if (state.mode === 'paged') paginateCurrentChapter();
+    }
+
+    function applySettings() {
+      const { fontSize, lineHeight, fontFamily, theme } = state.settings;
+      const t = themeStyles[theme] || themeStyles.sepia;
+
+      elements.app.style.backgroundColor = t.bg;
+      elements.app.style.color = t.text;
+
+      elements.readerContent.style.fontSize = `${fontSize}px`;
+      elements.readerContent.style.lineHeight = `${lineHeight}`;
+      elements.readerContent.style.fontFamily = fontFamily;
+
+      if (t.dark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+
+      saveSettings();
+    }
+
+    /* ===================================================================
+       UI VISIBILITY & DRAWERS
+       =================================================================== */
+    function toggleUI() {
+      state.uiVisible = !state.uiVisible;
+      if (state.uiVisible) {
+        elements.topBar.classList.remove('-translate-y-full', 'opacity-0');
+        elements.bottomBar.classList.remove('translate-y-full', 'opacity-0');
+      } else {
+        hideUI();
+      }
+    }
+
+    function hideUI() {
+      state.uiVisible = false;
+      elements.topBar.classList.add('-translate-y-full', 'opacity-0');
+      elements.bottomBar.classList.add('translate-y-full', 'opacity-0');
+    }
+
+    function openTOC() {
+      hideUI();
+      elements.tocDrawer.classList.remove('-translate-x-full');
+      elements.drawerOverlay.classList.remove('opacity-0', 'pointer-events-none');
+    }
+
+    function openSettings() {
+      hideUI();
+      elements.settingsDrawer.classList.remove('translate-y-full');
+      elements.drawerOverlay.classList.remove('opacity-0', 'pointer-events-none');
+    }
+
+    function closeDrawers() {
+      elements.tocDrawer.classList.add('-translate-x-full');
+      elements.settingsDrawer.classList.add('translate-y-full');
+      elements.drawerOverlay.classList.add('opacity-0', 'pointer-events-none');
+    }
+
+    function showShelf() {
+      hideUI();
+      closeDrawers();
+      elements.readingArea.classList.add('hidden');
+      elements.tapLeft.classList.add('hidden');
+      elements.tapCenter.classList.add('hidden');
+      elements.tapRight.classList.add('hidden');
+      elements.emptyState.classList.remove('hidden');
+      renderRecentShelf();
+    }
+
+    /* ===================================================================
+       STORAGE & PROGRESS PERSISTENCE
+       =================================================================== */
+    function saveSettings() {
+      localStorage.setItem('reader_settings', JSON.stringify(state.settings));
+    }
+
+    function loadSettings() {
+      const saved = localStorage.getItem('reader_settings');
+      if (saved) {
+        try {
+          state.settings = { ...state.settings, ...JSON.parse(saved) };
+          elements.fontIndicator.textContent = `${state.settings.fontSize}px`;
+          $('font-family-select').value = state.settings.fontFamily;
+        } catch (e) {}
+      }
+    }
+
+    function saveCurrentProgress() {
+      if (!state.bookName) return;
+      const history = JSON.parse(localStorage.getItem('reader_history') || '{}');
+      history[state.bookName] = {
+        chapterIndex: state.currentChapterIndex,
+        page: state.currentPage,
+        timestamp: Date.now()
+      };
+      localStorage.setItem('reader_history', JSON.stringify(history));
+    }
+
+    function getSavedProgress(bookName) {
+      const history = JSON.parse(localStorage.getItem('reader_history') || '{}');
+      return history[bookName] || null;
+    }
+
+    function saveBookMetaToHistory(bookName) {
+      const history = JSON.parse(localStorage.getItem('reader_history') || '{}');
+      if (!history[bookName]) {
+        history[bookName] = { chapterIndex: 0, page: 0, timestamp: Date.now() };
+        localStorage.setItem('reader_history', JSON.stringify(history));
+      }
+    }
+
+    async function renderRecentShelf() {
+      const history = JSON.parse(localStorage.getItem('reader_history') || '{}');
+      const keys = Object.keys(history).sort((a, b) => history[b].timestamp - history[a].timestamp);
+
+      if (keys.length === 0) {
+        elements.recentShelfContainer.classList.add('hidden');
+        return;
+      }
+
+      elements.recentShelfContainer.classList.remove('hidden');
+      elements.recentBooksList.innerHTML = '';
+
+      for (const bookName of keys) {
+        const item = document.createElement('div');
+        item.className = 'flex items-center justify-between p-2.5 bg-gray-50 dark:bg-gray-800/60 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer transition';
+        item.innerHTML = `
+          <div class="flex items-center space-x-2.5 overflow-hidden">
+            <i data-lucide="book-text" class="w-4 h-4 text-indigo-500 shrink-0"></i>
+            <span class="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">${bookName}</span>
+          </div>
+          <button data-delete="${bookName}" class="p-1 text-gray-400 hover:text-red-500 rounded">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          </button>
+        `;
+
+        item.addEventListener('click', async (e) => {
+          if (e.target.closest('button[data-delete]')) {
+            e.stopPropagation();
+            await deleteBookFromDB(bookName);
+            delete history[bookName];
+            localStorage.setItem('reader_history', JSON.stringify(history));
+            renderRecentShelf();
+            return;
+          }
+
+          showLoading('恢复阅读进度...');
+          const text = await loadBookFromDB(bookName);
+          hideLoading();
+
+          if (text) {
+            state.bookName = bookName;
+            state.rawText = text;
+            parseChapters(text);
+            startReading();
+          } else {
+            alert('未能读取到本地数据，请重新导入');
+          }
+        });
+
+        elements.recentBooksList.appendChild(item);
+      }
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    async function clearHistory() {
+      if (confirm('确定要清空阅读记录和缓存书籍吗？')) {
+        const history = JSON.parse(localStorage.getItem('reader_history') || '{}');
+        for (const name of Object.keys(history)) {
+          await deleteBookFromDB(name);
+        }
+        localStorage.removeItem('reader_history');
+        renderRecentShelf();
+      }
+    }
+
+    /* ===================================================================
+       UTILITY FUNCTIONS
+       =================================================================== */
+    function updateClock() {
+      const now = new Date();
+      const h = String(now.getHours()).padStart(2, '0');
+      const m = String(now.getMinutes()).padStart(2, '0');
+      elements.batteryTimeStatus.textContent = `${h}:${m}`;
+    }
+
+    function showLoading(msg = '处理中...') {
+      elements.loadingText.textContent = msg;
+      elements.loadingOverlay.classList.remove('hidden');
+    }
+
+    function hideLoading() {
+      elements.loadingOverlay.classList.add('hidden');
+    }
+
+    function escapeHTML(str) {
+      return str.replace(/[&<>'"]/g, 
+        tag => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          "'": '&#39;',
+          '"': '&quot;'
+        }[tag] || tag)
+      );
+    }
+  </script>
+</body>
+</html>
